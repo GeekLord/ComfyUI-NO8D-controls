@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import image_loader
 from PIL import Image
+import numpy as np
 
 
 class ImageLoaderSelectionTests(unittest.TestCase):
@@ -34,6 +35,89 @@ class ImageLoaderSelectionTests(unittest.TestCase):
             '[{"name":"selected.png","enabled":false}]',
         )
         self.assertEqual([ref["name"] for ref in output_refs], ["selected.png"])
+
+    def test_default_does_not_crop_image(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            Image.new("RGB", (19, 17), "red").save(base / "source.png")
+            with patch.object(image_loader, "_base_directory", return_value=base):
+                images, = image_loader.NO8DLoadImages().load(
+                    "[]", '[{"name":"source.png"}]'
+                )
+        self.assertEqual(tuple(images[0].shape[1:3]), (17, 19))
+
+    def test_center_crops_to_nearest_common_ratio_and_selected_multiple(self):
+        pixels = np.zeros((27, 35, 3), dtype=np.uint8)
+        pixels[1:25, 1:33] = (255, 0, 0)
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            Image.fromarray(pixels).save(base / "source.png")
+            with patch.object(image_loader, "_base_directory", return_value=base):
+                images, = image_loader.NO8DLoadImages().load(
+                    "[]", '[{"name":"source.png"}]', "8"
+                )
+        image = images[0]
+        self.assertEqual(tuple(image.shape[1:3]), (24, 32))
+        self.assertTrue(np.allclose(image.numpy()[0, :, :, 0], 1.0))
+        self.assertTrue(np.allclose(image.numpy()[0, :, :, 1:], 0.0))
+
+    def test_portrait_and_landscape_images_use_matching_common_ratios(self):
+        portrait = Image.new("RGB", (41, 62), "red")
+        landscape = Image.new("RGB", (62, 41), "blue")
+        self.assertEqual(
+            image_loader._center_crop_to_multiple(portrait, 8).size,
+            (32, 48),
+        )
+        self.assertEqual(
+            image_loader._center_crop_to_multiple(landscape, 8).size,
+            (48, 32),
+        )
+
+    def test_common_ratio_and_multiple_are_both_exact(self):
+        image = Image.new("RGB", (1025, 769), "red")
+        cropped = image_loader._center_crop_to_multiple(image, 64)
+        self.assertEqual(cropped.size, (1024, 768))
+        self.assertEqual(cropped.width % 64, 0)
+        self.assertEqual(cropped.height % 64, 0)
+        self.assertEqual(cropped.width * 3, cropped.height * 4)
+
+    def test_all_supported_common_ratios_remain_unchanged_when_aligned(self):
+        expected = {
+            (1, 1), (4, 5), (5, 4), (3, 4), (4, 3),
+            (2, 3), (3, 2), (9, 16), (16, 9), (2, 1), (1, 2),
+        }
+        self.assertEqual(set(image_loader._COMMON_ASPECT_RATIOS), expected)
+        for ratio_width, ratio_height in expected:
+            with self.subTest(ratio=(ratio_width, ratio_height)):
+                size = (ratio_width * 64, ratio_height * 64)
+                image = Image.new("RGB", size, "red")
+                self.assertEqual(
+                    image_loader._center_crop_to_multiple(image, 8).size,
+                    size,
+                )
+
+    def test_crop_rejects_an_image_smaller_than_the_multiple(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            Image.new("RGB", (32, 63), "red").save(base / "source.png")
+            with patch.object(image_loader, "_base_directory", return_value=base):
+                with self.assertRaisesRegex(ValueError, "cannot satisfy.*64"):
+                    image_loader.NO8DLoadImages().load(
+                        "[]", '[{"name":"source.png"}]', "64"
+                    )
+
+    def test_uses_exact_portrait_ratio_for_small_images(self):
+        image = Image.new("RGB", (64, 128), "red")
+        self.assertEqual(
+            image_loader._center_crop_to_multiple(image, 64).size,
+            (64, 128),
+        )
+
+    def test_crop_multiple_participates_in_change_fingerprint(self):
+        with patch.object(image_loader, "_ref_to_path", return_value=Path("missing.png")):
+            no_crop = image_loader.NO8DLoadImages.IS_CHANGED("[]", '[{"name":"source.png"}]', "none")
+            crop_8 = image_loader.NO8DLoadImages.IS_CHANGED("[]", '[{"name":"source.png"}]', "8")
+        self.assertNotEqual(no_crop, crop_8)
 
 
 if __name__ == "__main__":
