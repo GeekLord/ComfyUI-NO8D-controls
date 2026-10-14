@@ -4,11 +4,24 @@ All notable changes to ComfyUI-NO8D-controls will be documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.5.0] - 2026-10-15
 
 ### Added
 
 - Added `NO8D-Image Composer`, a layered freeform canvas editor with automatic cutout, outline, eraser, 20-step undo/redo, node thumbnail preview, and Chinese/English UI labels.
+- Added `NO8D-Dynamic-Prompt` and `NO8D-image-size` nodes.
+
+### Changed
+
+- Updated `NO8D-Generate` image editing and Krea2/Klein inpaint/outpaint routing.
+- Improved prompt generation presets and prompt-library browsing and output labels.
+- Made the Image Composer preview resize with its node and removed duplicate native previews.
+
+### Fixed
+
+- Use the `u2net` rembg model and declare the CPU rembg dependency for the background-removal feature.
+
+## [Unreleased]
 
 ## [1.4.1] - 2026-08-03
 
