@@ -7,10 +7,12 @@ const NODE_TITLE_KEYS = {
     NO8DRemoveKrea2ReferenceLatents: "removeKreaReferenceTitle",
     NO8DABPreview: "abPreviewTitle",
     NO8DBatchPromptPlus: "promptNodeTitle",
+    NO8DDynamicPrompt: "dynamicPromptNodeTitle",
     NO8DPromptView: "promptViewTitle",
     NO8DLoadImages: "imageLoaderTitle",
     NO8DSaveImageTextDataset: "saveTitle",
     NO8DEmptyLatent: "emptyLatentTitle",
+    NO8DImageSize: "imageSizeTitle",
     NO8DImageGrid: "imageGridTitle",
     NO8DImageComposer: "imageComposerTitle",
     NO8DImageTitle: "imageTitleTitle",
@@ -23,6 +25,7 @@ const NODE_DESCRIPTION_KEYS = {
     NO8DImageComposer: "imageComposerDescription",
     NO8DImageTitle: "imageTitleDescription",
     NO8DKreaStyleSelector: "kreaStyleDescription",
+    NO8DImageSize: "imageSizeDescription",
 };
 
 const WIDGET_LABELS = {
@@ -44,6 +47,22 @@ const WIDGET_LABELS = {
         text_padding: "imageTitlePadding",
         text_color: "imageTitleTextColor",
         text_align: "imageTitleTextAlign",
+    },
+    NO8DImageSize: {
+        auto_output: "imageSizeAutoOutput",
+        width: "imageSizeTargetWidth",
+        height: "imageSizeTargetHeight",
+        short_side: "imageSizeShortSide",
+        long_side: "imageSizeLongSide",
+        interpolation: "imageSizeInterpolation",
+        method: "imageSizeMethod",
+        condition: "imageSizeCondition",
+        multiple_of: "imageSizeMultipleOf",
+        force_size: "imageSizeForceSize",
+        aspect_ratio: "imageSizeAspectRatio",
+        invert_ratio: "imageSizeInvertRatio",
+        fill_color: "imageSizeFillColor",
+        fill_position: "imageSizeFillPosition",
     },
 };
 
@@ -82,10 +101,54 @@ const COMBO_LABELS = {
             ["imageTitleAlignRight", "Right", "居右"],
         ],
     },
+    NO8DImageSize: {
+        interpolation: [
+            ["imageSizeNearest", "nearest", "最近邻"],
+            ["imageSizeBilinear", "bilinear", "双线性"],
+            ["imageSizeBicubic", "bicubic", "双三次"],
+            ["imageSizeArea", "area", "区域"],
+            ["imageSizeNearestExact", "nearest-exact", "精确最近邻"],
+            ["imageSizeLanczos", "lanczos", "兰索斯"],
+        ],
+        method: [
+            ["imageSizeStretch", "stretch", "拉伸"],
+            ["imageSizeCrop", "crop", "裁切"],
+            ["imageSizePad", "pad", "填充"],
+        ],
+        condition: [
+            ["imageSizeAlways", "always", "总是"],
+            ["imageSizeDownscaleIfBigger", "downscale if bigger", "仅在原图较大时缩小"],
+            ["imageSizeUpscaleIfSmaller", "upscale if smaller", "仅在原图较小时放大"],
+            ["imageSizeIfBiggerArea", "if bigger area", "仅在原图面积较大时"],
+            ["imageSizeIfSmallerArea", "if smaller area", "仅在原图面积较小时"],
+        ],
+        aspect_ratio: [
+            ["imageSizeOriginalRatio", "original", "原图比例"],
+            ["imageSizeRatio1x1", "1:1", "1:1"],
+            ["imageSizeRatio1x2", "1:2", "1:2"],
+            ["imageSizeRatio2x3", "2:3", "2:3"],
+            ["imageSizeRatio3x4", "3:4", "3:4"],
+            ["imageSizeRatio4x5", "4:5", "4:5"],
+            ["imageSizeRatio9x16", "9:16", "9:16"],
+            ["imageSizeRatio9x21", "9:21", "9:21"],
+        ],
+        fill_position: [
+            ["imageSizePositionCenter", "center", "居中"],
+            ["imageSizePositionTop", "top", "顶部"],
+            ["imageSizePositionBottom", "bottom", "底部"],
+            ["imageSizePositionLeft", "left", "左侧"],
+            ["imageSizePositionRight", "right", "右侧"],
+            ["imageSizePositionTopLeft", "top-left", "左上"],
+            ["imageSizePositionTopRight", "top-right", "右上"],
+            ["imageSizePositionBottomLeft", "bottom-left", "左下"],
+            ["imageSizePositionBottomRight", "bottom-right", "右下"],
+        ],
+    },
 };
 
 const INPUT_LABELS = {
     NO8DImageTitle: { images: "imageTitleImages" },
+    NO8DImageSize: { image: "imageSizeImage" },
 };
 
 const OUTPUT_LABELS = {
@@ -93,6 +156,11 @@ const OUTPUT_LABELS = {
         image: "imageComposerImage",
         width: "imageComposerWidth",
         height: "imageComposerHeight",
+    },
+    NO8DImageSize: {
+        image: "imageSizeImage",
+        width: "imageSizeWidth",
+        height: "imageSizeHeight",
     },
 };
 
@@ -166,6 +234,14 @@ function normalizedComboValue(value) {
     return String(value ?? "").trim().toLocaleLowerCase().replace(/[\s\-_/]+/g, "");
 }
 
+function migrateImageSizeCombo(widgetName, value) {
+    if (widgetName !== "method") return value;
+    const token = normalizedComboValue(value);
+    if (["fillcrop", "keepproportion", "保持比例"].includes(token)) return "crop";
+    if (["补边"].includes(token)) return "pad";
+    return value;
+}
+
 function scheduleNodeRefresh(node) {
     if (!node || PENDING_REFRESH.has(node)) return;
     PENDING_REFRESH.add(node);
@@ -200,12 +276,16 @@ function applyNodeTitle(node) {
         const entries = comboLabels[widget.name];
         if (!entries) continue;
         const current = String(widget.value ?? "");
-        const normalizedCurrent = normalizedComboValue(current);
+        const migrated = className === "NO8DImageSize"
+            ? migrateImageSizeCombo(widget.name, current)
+            : current;
+        const normalizedValue = String(migrated ?? "");
+        const normalizedCurrent = normalizedComboValue(normalizedValue);
         const entry = entries.find(([, english, chinese]) => (
             normalizedCurrent === normalizedComboValue(english)
             || normalizedCurrent === normalizedComboValue(chinese)
         ));
-        const canonicalIndex = 2;
+        const canonicalIndex = className === "NO8DImageSize" ? 1 : 2;
         if (entry) widget.value = entry[canonicalIndex];
         else if (className === "NO8DImageTitle" && widget.name === "output_size") {
             widget.value = entries[0][canonicalIndex];

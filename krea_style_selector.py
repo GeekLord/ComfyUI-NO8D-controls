@@ -43,14 +43,6 @@ _OPENPYXL_REQUIRED_MESSAGE = (
     "Install this node's requirements.txt with ComfyUI Manager or ComfyUI's Python, then restart ComfyUI."
 )
 
-
-def _require_openpyxl():
-    try:
-        return importlib.import_module("openpyxl")
-    except ImportError as error:
-        raise RuntimeError(_OPENPYXL_REQUIRED_MESSAGE) from error
-
-
 def _user_root() -> Path:
     if folder_paths is not None:
         getter = getattr(folder_paths, "get_user_directory", None)
@@ -59,6 +51,11 @@ def _user_root() -> Path:
     override = os.environ.get("NO8D_KREA_USER_DIR")
     return Path(override) if override else _ROOT / "user_data" / "krea_style_selector"
 
+def _require_openpyxl():
+    try:
+        return importlib.import_module("openpyxl")
+    except ImportError as error:
+        raise RuntimeError(_OPENPYXL_REQUIRED_MESSAGE) from error
 
 def _read_user_payload() -> dict:
     root = _user_root()
@@ -415,7 +412,8 @@ def _catalog_item(item: dict, source: str) -> dict:
 
 
 def _formatted_prompt(item: dict) -> str:
-    return item["prompt"]
+    library = str(item.get("library") or item.get("category") or "custom").strip()
+    return f"{library}: {item['prompt']}"
 
 
 def _items_for_library(library: str, search_query: str = "") -> list[dict]:

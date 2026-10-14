@@ -2088,7 +2088,7 @@ class NO8DGenerateCanvasWidget {
     }
 
     drawTransformHandles(ctx) {
-        if (this.executionActive || !this.transformActive || this.outpaintResultVisible || !this.contentRect) return;
+        if (this.executionActive || !this.transformActive || !this.contentRect) return;
         const visibleRect = this.visibleTransformRect();
         if (!visibleRect) return;
         const [x, y, width, height] = visibleRect;
@@ -3134,8 +3134,7 @@ class NO8DGenerateCanvasWidget {
     }
 
     transformHit(pos) {
-        if (this.outpaintResultVisible
-            || !this.transformActive
+        if (!this.transformActive
             || !pointInRect(pos, this.canvasRect)) return null;
         const visibleRect = this.visibleTransformRect();
         if (!visibleRect) return null;
@@ -3258,7 +3257,7 @@ class NO8DGenerateCanvasWidget {
     }
 
     beginTransformDrag(pos) {
-        if (this.executionActive || this.outpaintResultVisible || !this.transformActive || !this.contentRect) return false;
+        if (this.executionActive || !this.transformActive || !this.contentRect) return false;
         const hit = this.transformHit(pos);
         if (!hit) return false;
         const pointer = this.canvasPointer(pos);
@@ -3268,6 +3267,7 @@ class NO8DGenerateCanvasWidget {
             pointer,
             transform: { ...this.ensureImageTransform() },
             changed: false,
+            promoteResult: this.outpaintResultVisible,
         };
         this.setTransformCursor(hit, true);
         return true;
@@ -3295,6 +3295,15 @@ class NO8DGenerateCanvasWidget {
         if (!drag || !pointer) return false;
         const deltaX = pointer[0] - drag.pointer[0];
         const deltaY = pointer[1] - drag.pointer[1];
+        if (!drag.changed && Math.abs(deltaX) + Math.abs(deltaY) < 0.5) return false;
+        // Keep a completed result and its mask visible on a simple click. Only
+        // when the pointer actually moves do we promote the displayed result
+        // to the next editing base, so the same drag can move or scale it.
+        if (drag.promoteResult) {
+            this.acceptCurrentResultAsEditingBase();
+            drag.transform = { ...this.ensureImageTransform() };
+            drag.promoteResult = false;
+        }
         const original = drag.transform;
         if (drag.handle === "move") {
             this.imageTransform = {

@@ -4,7 +4,7 @@ description = "NO8D custom nodes for LoRA stacking, prompt generation, image loa
 version = "1.4.1"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
-dependencies = ["json-repair>=0.61,<1", "openpyxl>=3.1,<4"]
+dependencies = ["json-repair>=0.61,<1", "openpyxl>=3.1,<4", "rembg[cpu]>=2.0.68,<3"]
 classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",

@@ -3,8 +3,9 @@ import { no8dLocale, t } from "./no8d_i18n.js";
 import { refreshBypassElements, registerWidgetBypassElements, wrapBypassRefresh } from "./no8d_bypass.js";
 
 const PROMPT_NODE = "NO8DBatchPromptPlus";
+const DYNAMIC_PROMPT_NODE = "NO8DDynamicPrompt";
 const PROMPT_VIEW = "NO8DPromptView";
-const PROMPT_NODE_CLASSES = new Set([PROMPT_NODE]);
+const PROMPT_NODE_CLASSES = new Set([PROMPT_NODE, DYNAMIC_PROMPT_NODE]);
 const STALE_PROMPT_WIDGETS = new Set(["user_prompt", "token_range", "auto_run", "seed_control", "fixed_text"]);
 const SEED_CONTROL_VALUES = new Set(["fixed", "randomize", "increment", "decrement"]);
 
@@ -16,6 +17,8 @@ const WIDGET_LABELS = {
     composition_preset: "promptCompositionPreset",
     length_preset: "promptLengthPreset",
     output_language: "promptOutputLanguage",
+    duration: "dynamicPromptDuration",
+    shot_count: "dynamicPromptShotCount",
     text: "promptTextInput",
     auto_output: "promptViewAuto",
     fixed_text: "promptFixedText",
@@ -30,8 +33,8 @@ const SLOT_LABELS = {
     prompt: "promptOutput",
 };
 const PROMPT_RULE_DISPLAY = {
-    "自然语言": "Natural language",
-    "json结构": "JSON structure",
+    "Krea2": "Krea2",
+    "Ideogram4": "Ideogram4",
 };
 const STYLE_DISPLAY = {
     "自行判断": "Auto",
@@ -61,6 +64,7 @@ const LANGUAGE_DISPLAY = {
 const LENGTH_VALUES = new Set([...Object.keys(LENGTH_DISPLAY), ...Object.values(LENGTH_DISPLAY)]);
 const LANGUAGE_VALUES = new Set([...Object.keys(LANGUAGE_DISPLAY), ...Object.values(LANGUAGE_DISPLAY)]);
 const PROMPT_WIDGET_ORDER = ["prompt_rules", "style_preset", "composition_preset", "length_preset", "output_language", "extra_rules", "seed"];
+const DYNAMIC_PROMPT_WIDGET_ORDER = ["duration", "shot_count", "style_preset", "extra_rules", "seed"];
 const COMPOSITION_VALUE_ALIASES = {
     "Close shot": "Medium close-up",
     "Medium wide shot": "Full shot",
@@ -102,9 +106,19 @@ function migrateLegacyWidgetValues(node, nodeName, info) {
         const hasLegacyFixedText = values.length >= 9
             && Number.isFinite(Number(values[7]))
             && SEED_CONTROL_VALUES.has(String(values[8] || "").trim());
-        if (!hasLegacyFixedText) return;
-        node._no8dLegacyFixedText = String(values[5] ?? "");
-        values.splice(5, 1);
+        if (hasLegacyFixedText) {
+            node._no8dLegacyFixedText = String(values[5] ?? "");
+            values.splice(5, 1);
+        }
+        const promptRuleAliases = {
+            "自然语言": "Krea2",
+            "Natural language": "Krea2",
+            "Natural language (Krea-style)": "Krea2",
+            "json结构": "Ideogram4",
+            "JSON structure": "Ideogram4",
+            "JSON caption (Ideogram-style)": "Ideogram4",
+        };
+        if (promptRuleAliases[String(values[0] || "").trim()]) values[0] = promptRuleAliases[String(values[0] || "").trim()];
         return;
     }
     if (nodeName === PROMPT_VIEW) {
@@ -177,10 +191,11 @@ function removeStalePromptPlusWidgets(node) {
 
 function orderPromptPlusWidgets(node) {
     if (!PROMPT_NODE_CLASSES.has(nodeClass(node)) || !Array.isArray(node.widgets)) return;
-    const rank = new Map(PROMPT_WIDGET_ORDER.map((name, index) => [name, index]));
+    const order = nodeClass(node) === DYNAMIC_PROMPT_NODE ? DYNAMIC_PROMPT_WIDGET_ORDER : PROMPT_WIDGET_ORDER;
+    const rank = new Map(order.map((name, index) => [name, index]));
     const widgetRank = (widget) => {
         if (typeof widget.name === "string" && /control_after_generate/i.test(widget.name)) return 999;
-        return rank.has(widget.name) ? rank.get(widget.name) : PROMPT_WIDGET_ORDER.length;
+        return rank.has(widget.name) ? rank.get(widget.name) : order.length;
     };
     node.widgets.sort((a, b) => {
         const ai = widgetRank(a);
@@ -244,7 +259,11 @@ function applyWidgetLabels(node) {
     let changed = false;
     removeStalePromptPlusWidgets(node);
     orderPromptPlusWidgets(node);
-    const title = cls === PROMPT_NODE ? t("promptNodeTitle") : cls === PROMPT_VIEW ? t("promptViewTitle") : "";
+    const title = cls === PROMPT_NODE
+        ? t("promptNodeTitle")
+        : cls === DYNAMIC_PROMPT_NODE
+            ? t("dynamicPromptNodeTitle")
+            : cls === PROMPT_VIEW ? t("promptViewTitle") : "";
     if (title && node.title !== title) {
         node.title = title;
         changed = true;
@@ -290,6 +309,12 @@ function applyWidgetLabels(node) {
         "fixed_text",
         "edited_text",
         "auto_output",
+    ] : cls === DYNAMIC_PROMPT_NODE ? [
+        "duration",
+        "shot_count",
+        "style_preset",
+        "extra_rules",
+        "seed",
     ] : [
         "prompt_rules",
         "style_preset",
@@ -329,7 +354,7 @@ app.registerExtension({
         applyWidgetLabels(node);
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (![PROMPT_NODE, PROMPT_VIEW].includes(nodeData.name)) return;
+        if (![PROMPT_NODE, DYNAMIC_PROMPT_NODE, PROMPT_VIEW].includes(nodeData.name)) return;
         wrapBypassRefresh(nodeType);
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {

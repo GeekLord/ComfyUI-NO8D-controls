@@ -15,6 +15,8 @@ OLD_RULE_JSON = "JSON caption (Ideogram-style)"
 RULE_NATURAL = "自然语言"
 RULE_JSON = "json结构"
 RULE_ALIASES = {
+    "Krea2": RULE_NATURAL,
+    "Ideogram4": RULE_JSON,
     "Natural language": RULE_NATURAL,
     "JSON structure": RULE_JSON,
     OLD_RULE_NATURAL: RULE_NATURAL,

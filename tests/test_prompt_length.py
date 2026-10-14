@@ -18,11 +18,11 @@ class PromptLengthTests(unittest.TestCase):
         self.assertEqual(prompt_plus._normalize_output_language("English"), "英文")
         self.assertEqual(prompt_plus._normalize_output_language("Chinese"), "中文")
 
-    def test_backend_accepts_english_prompt_rule_alias_for_comfy_validation(self):
+    def test_backend_exposes_only_named_product_modes(self):
         options = prompt_plus.NO8DBatchPromptPlus.INPUT_TYPES()["required"]["prompt_rules"][0]
-        self.assertIn("Natural language", options)
+        self.assertEqual(options, ("Krea2", "Ideogram4"))
         self.assertEqual(
-            prompt_plus.prompt_config_manager.normalize_prompt_rule_name("Natural language"),
+            prompt_plus.prompt_config_manager.normalize_prompt_rule_name("Krea2"),
             prompt_plus._RULE_NATURAL,
         )
 
