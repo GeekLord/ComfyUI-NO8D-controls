@@ -11,7 +11,7 @@ import threading
 import numpy as np
 import torch
 from PIL import Image, ImageChops, ImageColor, ImageOps
-from comfy_api.v0_0_2 import io, ui
+from comfy_api.v0_0_2 import io
 
 try:
     import folder_paths
@@ -271,7 +271,7 @@ def _remove_background_sync(payload: bytes) -> bytes:
         raise RuntimeError("未安装 rembg，无法使用抠图功能。请先在 ComfyUI 环境安装 rembg。") from error
     with _REMBG_SESSION_LOCK:
         if _REMBG_SESSION is None:
-            _REMBG_SESSION = rembg.new_session()
+            _REMBG_SESSION = rembg.new_session("u2net")
         session = _REMBG_SESSION
     result = rembg.remove(payload, session=session)
     if isinstance(result, Image.Image):
@@ -342,8 +342,7 @@ class NO8DImageComposer(io.ComfyNode):
     @classmethod
     def execute(cls, layout_json: str = "{}") -> io.NodeOutput:
         output, width, height = compose_project(layout_json)
-        preview = ui.PreviewImage(output, cls=cls).as_dict()
-        return io.NodeOutput(output, width, height, ui=preview)
+        return io.NodeOutput(output, width, height)
 
 
 NODE_CLASS_MAPPINGS = {"NO8DImageComposer": NO8DImageComposer}

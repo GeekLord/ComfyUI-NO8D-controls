@@ -206,13 +206,12 @@ class ImageComposerTests(unittest.TestCase):
         self.assertTrue(schema.inputs[0].socketless)
         self.assertEqual([item.id for item in schema.outputs], ["image", "width", "height"])
 
-    def test_execute_returns_preview_image_ui(self):
+    def test_execute_returns_node_output_without_preview_ui(self):
         result = self.composer.NO8DImageComposer.execute(
             json.dumps({"ratio": "1:1", "short_side": 8, "layers": []})
         )
-        self.assertEqual(result.ui["images"][0]["filename"], "preview.png")
+        self.assertIsNone(result.ui)
         self.assertEqual(result.result[1:], (8, 8))
-        self.assertEqual(tuple(self.composer._test_preview_class.last_image.shape), (1, 8, 8, 3))
 
     def test_remove_background_route_is_registered_with_test_stub(self):
         self.assertIn(
@@ -224,6 +223,18 @@ class ImageComposerTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"rembg": None}):
             with self.assertRaisesRegex(RuntimeError, "未安装 rembg"):
                 self.composer._remove_background_sync(b"not-an-image")
+
+    def test_rembg_uses_u2net_model(self):
+        session = object()
+        rembg = types.SimpleNamespace(
+            new_session=mock.Mock(return_value=session),
+            remove=mock.Mock(return_value=b"processed"),
+        )
+        with mock.patch.dict(sys.modules, {"rembg": rembg}):
+            result = self.composer._remove_background_sync(b"image")
+        rembg.new_session.assert_called_once_with("u2net")
+        rembg.remove.assert_called_once_with(b"image", session=session)
+        self.assertEqual(result, b"processed")
 
     def test_frontend_uses_hidden_state_and_free_canvas_navigation(self):
         source = (

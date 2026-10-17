@@ -161,7 +161,7 @@ Prompt Libraries 专属工作流：[examples/NO8D-Prompt-libraries.json](example
 
 - 用画布比例和短边尺寸设置输出；滚轮缩放视图，空格＋拖动平移。编辑时，超出输出画布的图片部分仍可见。
 - 可调整图层顺序、显隐和锁定状态，框选多层，并移动、缩放、旋转或镜像图片；缩放与旋转也支持键盘输入精确数值。
-- 支持自动抠像，抠像后可按需开启描边，或用橡皮擦只擦除当前图层。抠像需要在 ComfyUI 使用的 Python 环境中另行安装 `rembg`；编辑器的其他功能不依赖它。
+- 支持自动抠像，抠像后可按需开启描边，或用橡皮擦只擦除当前图层。抠像需要在 ComfyUI 使用的 Python 环境中另行安装 `rembg`；首次使用时还需下载约 176 MB 的 U2Net 模型。可从[官方地址下载](https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx)，并保存为 `u2net.onnx`：旧版默认路径是 `%USERPROFILE%\.u2net\u2net.onnx`，新版默认路径是 `%USERPROFILE%\.rembg\models\u2net\u2net.onnx`；若设置了 `U2NET_HOME` 或 `REMBG_HOME`，则放入相应模型目录。下载失败可查看 ComfyUI 控制台报错。模型缓存后通常无需再次联网；编辑器的其他功能不依赖 `rembg`。
 - 按 `V` 显示或隐藏图层、`Ctrl＋L` 锁定或解锁、`Delete` 删除未锁定的选中图层。方向键每次移动 1 像素，`Shift＋方向键` 每次移动 10 像素。
 - 编辑器保留 20 步撤销记录（Ctrl＋Z），支持 Ctrl＋Shift＋Z 或 Ctrl＋Y 重做。历史记录仅在本次打开编辑器期间保留；要在工作流中保留合成结果，请点击“保存布局”。文字随 ComfyUI 的中英文设置切换。
 - 最终输出按黑色画布裁切，并同时输出宽度和高度。

@@ -4,7 +4,12 @@ import { no8dLocale, t } from "./no8d_i18n.js";
 import { refreshBypassElements, registerBypassElement, wrapBypassRefresh } from "./no8d_bypass.js";
 
 const NODE_CLASS = "NO8DLoadImages";
-const HIDDEN_WIDGETS = new Set(["image_files", "output_files"]);
+const HIDDEN_WIDGETS = new Set(["image_files", "output_files", "crop_multiple"]);
+const INTERNAL_WIDGET_DEFAULTS = {
+    image_files: "[]",
+    output_files: "[]",
+    crop_multiple: "none",
+};
 const DEPRECATED_WIDGETS = new Set(["output_all"]);
 const WIDGET_LABELS = {
     image_files: "imageLoaderFiles",
@@ -66,15 +71,24 @@ function outputWidget(node) {
     return (node.widgets || []).find((widget) => widget.name === "output_files");
 }
 
+function cropMultipleWidget(node) {
+    return (node.widgets || []).find((widget) => widget.name === "crop_multiple");
+}
+
+function normalizeCropMultiple(value) {
+    const text = String(value ?? "none").trim().toLowerCase();
+    return ["8", "16", "32", "64"].includes(text) ? text : "none";
+}
+
 function ensureInternalWidgets(node) {
     if (!node.widgets) node.widgets = [];
     for (const name of HIDDEN_WIDGETS) {
         let widget = (node.widgets || []).find((item) => item.name === name);
         if (!widget && typeof node.addWidget === "function") {
-            widget = node.addWidget("text", name, "[]", () => {});
+            widget = node.addWidget("text", name, INTERNAL_WIDGET_DEFAULTS[name], () => {});
         }
         if (!widget) continue;
-        if (widget.value == null || widget.value === "") widget.value = "[]";
+        if (widget.value == null || widget.value === "") widget.value = INTERNAL_WIDGET_DEFAULTS[name];
         widget.serialize = true;
     }
     hideInternalWidgets(node);
@@ -690,6 +704,28 @@ function makeIconButton(label, icon, onClick) {
     return button;
 }
 
+function updateCropSelect(node) {
+    const select = node?._no8dImageLoaderEls?.cropSelect;
+    if (!select) return;
+    const value = normalizeCropMultiple(cropMultipleWidget(node)?.value);
+    const options = [
+        ["none", t("imageLoaderCropNone")],
+        ["8", `8 ${t("imageLoaderCropMultipleSuffix")}`],
+        ["16", `16 ${t("imageLoaderCropMultipleSuffix")}`],
+        ["32", `32 ${t("imageLoaderCropMultipleSuffix")}`],
+        ["64", `64 ${t("imageLoaderCropMultipleSuffix")}`],
+    ];
+    select.replaceChildren(...options.map(([optionValue, label]) => {
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = label;
+        return option;
+    }));
+    select.value = value;
+    select.title = t("imageLoaderCropMultipleTitle");
+    select.setAttribute("aria-label", t("imageLoaderCropMultipleTitle"));
+}
+
 function makeUi(node) {
     ensureStyleSheet();
     const root = document.createElement("div");
@@ -728,7 +764,7 @@ function makeUi(node) {
     const row = document.createElement("div");
     row.style.cssText = [
         "display:grid",
-        "grid-template-columns:36px minmax(0, 1fr) 36px",
+        "grid-template-columns:36px minmax(0, 1fr) minmax(108px, auto) 36px",
         "align-items:center",
         "column-gap:5px",
         "row-gap:10px",
@@ -751,6 +787,30 @@ function makeUi(node) {
 
     const maxSize = makeIconButton(t("imageLoaderMaxThumbSize"), maxIcon, () => toggleMaxThumbSize(node));
     maxSize.style.borderColor = "#2563eb";
+
+    const cropSelect = document.createElement("select");
+    cropSelect.style.cssText = [
+        "height:32px",
+        "min-width:108px",
+        "max-width:150px",
+        "padding:0 6px",
+        "border:1px solid #4b5563",
+        "border-radius:6px",
+        "background:#2b2b2b",
+        "color:#d1d5db",
+        "box-sizing:border-box",
+    ].join(";");
+    cropSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
+    cropSelect.addEventListener("change", () => {
+        ensureInternalWidgets(node);
+        const widget = cropMultipleWidget(node);
+        if (!widget) return;
+        widget.value = normalizeCropMultiple(cropSelect.value);
+        widget.callback?.(widget.value);
+        node.graph?.change?.();
+        node.graph?.setDirtyCanvas?.(true, true);
+        app?.canvas?.setDirty?.(true, true);
+    });
 
     const sizeLabel = document.createElement("div");
     sizeLabel.style.cssText = "color:#cbd5e1; white-space:nowrap; font-weight:600; flex:0 0 auto;";
@@ -793,7 +853,7 @@ function makeUi(node) {
         "box-sizing:border-box",
     ].join(";");
     sizeControl.append(sizeLabel, sizeRange);
-    row.append(load, sizeControl, maxSize, input);
+    row.append(load, sizeControl, cropSelect, maxSize, input);
 
     const preview = document.createElement("div");
     preview.className = "no8d-image-loader-preview";
@@ -966,7 +1026,8 @@ function makeUi(node) {
     footer.append(status, details);
 
     panel.append(row, preview, footer);
-    node._no8dImageLoaderEls = { root, panel, load, maxSize, status, sizeLabel, sizeRange, preview, details, selectionBox };
+    node._no8dImageLoaderEls = { root, panel, load, maxSize, cropSelect, status, sizeLabel, sizeRange, preview, details, selectionBox };
+    updateCropSelect(node);
     return root;
 }
 
@@ -1014,6 +1075,7 @@ function renderLoader(node) {
     els.maxSize.setAttribute("aria-label", t("imageLoaderMaxThumbSize"));
     els.preview.title = t("imageLoaderPasteHint");
     els.sizeLabel.textContent = t("imageLoaderThumbSize");
+    updateCropSelect(node);
     if (Number(els.sizeRange.value) !== size) {
         els.sizeRange.value = String(size);
     }

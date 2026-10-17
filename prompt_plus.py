@@ -38,12 +38,17 @@ _MAX_PARALLEL_REQUESTS = 3
 _RETRY_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 _ARK_BURST_RETRY_DELAY = 8.0
 _ARK_REQUEST_LOCK = threading.Lock()
-_PROMPT_PIPELINE_VERSION = "structured-geometry-v10"
+_PROMPT_PIPELINE_VERSION = "structured-geometry-static-v15"
 # The structured worksheet has substantially more fields than the rendered
 # prompt. Keep its private budget separate from the public 256/512-token target.
 # Native JSON-schema decoding still obeys max_tokens and needs room to emit all
 # required geometry and grounded descriptive fields.
 _NATURAL_ANALYSIS_TOKEN_OVERHEAD = 1792
+_PROMPT_RULE_INPUTS = ("Krea2", "Ideogram4")
+
+
+def _normalize_prompt_rule_selection(prompt_rules):
+    return prompt_config_manager.normalize_prompt_rule_name(prompt_rules)
 _STYLE_PRESETS = (
     "自行判断",
     "不描述风格",
@@ -367,6 +372,108 @@ def _normalize_length_preset(length_preset):
 def _normalize_output_language(output_language):
     language = str(output_language or "").strip()
     return _OUTPUT_LANGUAGE_ALIASES.get(language, language) if language else "英文"
+
+
+_CHINESE_RENDERED_ANALYSIS_FIELDS = (
+    "style_subtype",
+    "explicit_subject_requirement",
+    "primary_subject",
+    "primary_subject_appearance_and_clothing",
+    "primary_subject_pose_and_action",
+    "primary_subject_expression",
+    "camera_azimuth_or_visible_side",
+    "subject_orientation",
+    "multiple_subject_layout",
+    "environment_and_spatial_context",
+    "lighting_color_and_atmosphere",
+    "scene_description",
+)
+
+
+def _contains_english_prose(value):
+    text = re.sub(r"\[[^\]]+\]", " ", str(value or ""))
+    return bool(re.search(r"\b[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){2,}\b", text))
+
+
+def _analysis_language_conflicts(text, output_language):
+    if _normalize_output_language(output_language) != "中文":
+        return False
+    try:
+        envelope = _parse_analysis_envelope(_strip_code_fence(_strip_thinking(text)).strip())
+    except ValueError:
+        return False
+    analysis = envelope.get("visual_analysis")
+    values = []
+    if isinstance(analysis, dict):
+        values.extend(analysis.get(field) for field in _CHINESE_RENDERED_ANALYSIS_FIELDS)
+        for subject in analysis.get("secondary_subjects") or []:
+            if isinstance(subject, dict):
+                values.append(subject.get("visible_descriptor"))
+    values.append(envelope.get("scene_description"))
+    return any(_contains_english_prose(value) for value in values if isinstance(value, str) and value.strip())
+
+
+def _chinese_language_correction_instruction():
+    return (
+        "The requested output language is Simplified Chinese, but the previous JSON contains English prose in fields "
+        "that are rendered verbatim. Return the same complete JSON schema with the same observed facts and coordinates. "
+        "Keep JSON keys, generation_mode, camera_elevation, view_direction, lens_class, perspective_effect, shot_scale, "
+        "depth_layer, and other canonical categorical values in their required canonical forms. Rewrite style_subtype, "
+        "subject descriptions, appearance, pose, expression, camera azimuth description, environment, atmosphere, "
+        "secondary visible_descriptor values, and scene_description in fluent Simplified Chinese. Output JSON only."
+    )
+
+
+def _localized_depth(value, language):
+    raw = str(value or "").strip()
+    if language != "中文" or not raw:
+        return raw
+    normalized = re.sub(r"[_-]+", " ", raw.lower()).strip()
+    return {
+        "foreground": "前景",
+        "midground": "中景",
+        "middle ground": "中景",
+        "background": "背景",
+        "far background": "远景背景",
+    }.get(normalized, raw)
+
+
+def _localized_camera_relation(value, language):
+    raw = str(value or "").strip()
+    if language != "中文" or not raw:
+        return raw
+    normalized = re.sub(r"[_-]+", " ", raw.lower()).strip()
+    return {
+        "above": "高于主体",
+        "below": "低于主体",
+        "downward": "向下俯拍",
+        "upward": "向上仰拍",
+        "level": "平视",
+        "eye level": "平视",
+        "at subject eye level": "平视",
+        "frontal": "正面",
+        "front view": "正面",
+        "front left three quarter view": "左前方三分之四视角",
+        "front right three quarter view": "右前方三分之四视角",
+        "indeterminate": "",
+    }.get(normalized, raw)
+
+
+def _localized_shot_scale(value, language):
+    raw = str(value or "").strip()
+    if language != "中文" or not raw:
+        return raw
+    normalized = re.sub(r"[_-]+", " ", raw.lower()).strip()
+    return {
+        "extreme close up": "大特写",
+        "close up": "特写",
+        "medium close up": "中近景",
+        "medium shot": "中景",
+        "medium full shot": "中全景",
+        "full shot": "全身景别",
+        "wide shot": "远景",
+        "extreme wide shot": "大远景",
+    }.get(normalized, raw)
 
 def _endpoint_from_base_url(base_url):
     url = str(base_url or "").strip().strip('"').strip("'")
@@ -871,7 +978,7 @@ def _derived_shot_scale(analysis, language):
         return "中景" if language == "中文" else "a waist-up medium view"
     if any(token in extent for token in ("chest", "胸")):
         return "近景" if language == "中文" else "a chest-up close view"
-    return str(analysis.get("shot_scale") or "").strip()
+    return _localized_shot_scale(analysis.get("shot_scale"), language)
 
 
 def _derived_axis(analysis, language):
@@ -913,6 +1020,17 @@ def _lens_phrase(analysis, language):
     else:
         effect = "保持较自然的空间比例" if language == "中文" else "keeps relatively natural spatial proportions"
     if language == "中文":
+        normalized = re.sub(r"[_-]+", " ", lens_lower).strip()
+        lens = {
+            "ultra wide angle": "超广角",
+            "wide angle": "广角",
+            "standard": "标准",
+            "normal": "标准",
+            "telephoto": "长焦",
+            "long": "长焦",
+            "fisheye": "鱼眼",
+            "macro": "微距",
+        }.get(normalized, lens)
         return f"{lens}镜头{effect}"
     article = "an" if lens[:1].lower() in "aeiou" else "a"
     return f"{article} {lens} lens {effect}"
@@ -925,7 +1043,7 @@ def _secondary_layout(analysis, language):
             continue
         descriptor = str(subject.get("visible_descriptor") or subject.get("descriptor") or "secondary subject").strip()
         region = _point_region(_point_xy(subject.get("anchor_xy") or subject.get("xy")), language)
-        depth = str(subject.get("depth_layer") or subject.get("depth") or "").strip()
+        depth = _localized_depth(subject.get("depth_layer") or subject.get("depth"), language)
         if language == "中文":
             parts.append("位于".join(part for part in (descriptor, f"{region}{depth}" if region or depth else "") if part))
         else:
@@ -1054,6 +1172,13 @@ def _render_natural_prompt(
         return ""
     language = _normalize_output_language(output_language)
     style = str(analysis.get("style_subtype") or analysis.get("style_category") or "").strip()
+    if language == "中文" and not analysis.get("style_subtype"):
+        style = {
+            "realistic photography": "写实摄影",
+            "anime illustration": "动漫插图",
+            "hand-drawn art": "手绘艺术",
+            "digital art": "数字艺术",
+        }.get(style.lower(), style)
     primary = str(
         analysis.get("explicit_subject_requirement")
         or analysis.get("primary_subject")
@@ -1084,8 +1209,11 @@ def _render_natural_prompt(
     elif expression_priority == "normal":
         expression = _limit_prompt_to_approx_tokens(expression, 24).rstrip(" .;；,，:：")
     if language == "中文":
-        if elevation == "level" and direction == "level":
-            elevation, direction = "平视", ""
+        elevation = _localized_camera_relation(elevation, language)
+        direction = _localized_camera_relation(direction, language)
+        azimuth = _localized_camera_relation(azimuth, language)
+        if elevation == "平视" and direction == "平视":
+            direction = ""
         camera = "、".join(dict.fromkeys(part for part in (elevation, direction, azimuth) if part))
         geometry = "，".join(part for part in (shot_scale, f"镜头相对{primary}呈{camera}" if camera else "", axis, occupancy_text) if part)
         if detail_band == "near":
@@ -1094,7 +1222,8 @@ def _render_natural_prompt(
             content = (lens, descriptive["pose"], descriptive["appearance"], descriptive["environment"], descriptive["atmosphere"], expression, secondary, scene)
         else:
             content = (lens, descriptive["pose"], descriptive["appearance"], descriptive["environment"], descriptive["atmosphere"], secondary, scene, expression)
-        return "。".join(part.strip("。") for part in (style, geometry, *content) if part).strip("。") + "。"
+        still_prompt = "。".join(part.strip("。") for part in (style, geometry, *content) if part).strip("。") + "。"
+        return still_prompt
     if elevation == "level" and direction == "level":
         elevation, direction = "at subject eye level", ""
     camera = ", ".join(dict.fromkeys(part for part in (elevation, direction, azimuth) if part))
@@ -1105,7 +1234,8 @@ def _render_natural_prompt(
         content = (lens, descriptive["pose"], descriptive["appearance"], descriptive["environment"], descriptive["atmosphere"], expression, secondary, scene)
     else:
         content = (lens, descriptive["pose"], descriptive["appearance"], descriptive["environment"], descriptive["atmosphere"], secondary, scene, expression)
-    return ". ".join(part.strip(". ") for part in (style, geometry, *content) if part).strip() + "."
+    still_prompt = ". ".join(part.strip(". ") for part in (style, geometry, *content) if part).strip() + "."
+    return still_prompt
 
 
 def _parse_analysis_envelope(text):
@@ -1255,7 +1385,8 @@ def _natural_system_prompt(rule_name):
     return f"""
 You are a visual concept organizer and prompt engineer for text-to-image models.
 
-Your job is not merely to make the input longer. Transform the available intent and/or visual reference into one clear, useful, image-generation prompt.
+Your job is not merely to make the input longer. Transform the available intent and/or visual reference into one clear, useful generation prompt.
+Describe one coherent final still frame.
 
 First infer the input situation internally:
 - Text only: treat the user's text as a creative seed. If it is short or vague, develop a coherent visual direction with subject, setting, mood, style, composition, lighting, and grounded details. If it is already detailed, lightly polish and structure it without changing the core idea.
@@ -1268,7 +1399,7 @@ Core behavior:
 3. Do not add new main subjects, animals, props, text, logos, or specific identities unless implied or requested.
 4. If a medium is explicit, such as photo, illustration, sketch, painting, 3D render, or cinematic still, preserve that medium.
 5. If visible or requested text should appear in the image, quote the exact text.
-6. Organize the final prompt so a T2I model can parse it cleanly: main subject first, then action/pose, setting, composition, lighting, style, atmosphere, and key details.
+6. Organize the final prompt so the target model can parse it cleanly: main subject first, then action/pose, setting, composition, lighting, style, atmosphere, and key details.
 7. Use internal reasoning to choose the best visual direction, but do not output reasoning, alternatives, bullets, JSON, markdown, labels, or commentary.
 
 Prompt writing rules:
@@ -1652,7 +1783,7 @@ def _build_messages(prompt_input, rule, extra_rules, seed, image_data_url="", st
     else:
         user_content = (
             "Input mode: text only.\n"
-            "Use the text as a creative seed or detailed prompt. If it is short, develop a coherent visual direction. "
+            "Use the text as a creative seed or detailed image prompt. If it is short, develop a coherent visual direction. "
             "If it is already detailed, preserve its direction and lightly polish it.\n\n"
             f"User text:\n{prompt_text}\n\n{mandatory_tasks}"
         )
@@ -1733,7 +1864,6 @@ Required decisions:
 - Write descriptive fields in {"Simplified Chinese" if language == "中文" else "English"}, with enough combined detail for a final prompt near {target_tokens} tokens. Never normalize unusual clothing, pose, equipment, color cast, or lighting into a generic scene.
 - Keep the four fields concise: appearance/clothing about {50 if target_tokens == 256 else 100} tokens, pose/action about {42 if target_tokens == 256 else 84}, environment/spatial context about {45 if target_tokens == 256 else 90}, and lighting/color/atmosphere about {32 if target_tokens == 256 else 64}. Put distinctive evidence such as unusual garments, hand-object contact, cables/equipment, and dominant color casts before generic background facts.
 - Before returning JSON, reject any combination of camera_elevation=above with view_direction=upward, or below with downward.
-
 Schema:
 {{
   "visual_analysis": {{
@@ -2108,13 +2238,9 @@ class NO8DBatchPromptPlus:
 
     @classmethod
     def INPUT_TYPES(cls):
-        prompt_rule_names = prompt_config_manager.prompt_rule_names()
-        prompt_rule_inputs = prompt_rule_names + [
-            name for name in ("Natural language", "JSON structure") if name not in prompt_rule_names
-        ]
         return {
             "required": {
-                "prompt_rules": (prompt_rule_inputs, {"default": _RULE_NATURAL}),
+                "prompt_rules": (_PROMPT_RULE_INPUTS, {"default": "Krea2"}),
                 "style_preset": (_STYLE_PRESET_INPUTS, {"default": "自行判断"}),
                 "composition_preset": (_COMPOSITION_PRESET_INPUTS, {"default": "自行判断"}),
                 "length_preset": (_LENGTH_PRESET_INPUTS, {"default": "标准"}),
@@ -2142,7 +2268,7 @@ class NO8DBatchPromptPlus:
         service, model_cfg = prompt_config_manager.current_service()
         image_hashes = _images_to_hashes(images)
         prompt_text = str(extra_rules or "").strip()
-        prompt_rule = prompt_config_manager.normalize_prompt_rule_name(prompt_rules)
+        prompt_rule = _normalize_prompt_rule_selection(prompt_rules)
         style_preset = _normalize_style_preset(style_preset)
         composition_preset = _normalize_composition_preset(composition_preset)
         length_preset = _normalize_length_preset(length_preset)
@@ -2151,7 +2277,8 @@ class NO8DBatchPromptPlus:
             "pipeline_version": _PROMPT_PIPELINE_VERSION,
             "prompt": prompt_text,
             "image_hashes": image_hashes,
-            "prompt_rules": prompt_rule,
+            "prompt_rules": str(prompt_rules or ""),
+            "normalized_prompt_rule": prompt_rule,
             "prompt_rule_text": prompt_config_manager.prompt_rule_text(prompt_rule),
             "style_preset": style_preset,
             "style_preset_rule": _style_preset_rule(style_preset),
@@ -2219,10 +2346,11 @@ class NO8DBatchPromptPlus:
             instruction = prompt
         request_model = _model_for_input(service, model, input_mode)
         request_temperature = _temperature_for_input(temperature, input_mode)
-        strict_image_analysis = bool(
-            image_data_url and prompt_config_manager.prompt_rule_mode(prompt_rule) == "natural"
+        strict_natural_analysis = bool(
+            prompt_config_manager.prompt_rule_mode(prompt_rule) == "natural"
+            and image_data_url
         )
-        if strict_image_analysis:
+        if image_data_url and strict_natural_analysis:
             messages = _build_image_analysis_messages(
                 instruction,
                 image_data_url,
@@ -2253,11 +2381,11 @@ class NO8DBatchPromptPlus:
                     api_base_url,
                     service_type=service_type,
                 )
-                if strict_image_analysis
+                if strict_natural_analysis
                 else None
             )
             raw = _chat_completion(api_base_url, api_key, request_model, messages, request_temperature, max_tokens, effective_seed, service_type, response_format)
-            if strict_image_analysis and _analysis_style_conflicts(raw, style_preset):
+            if image_data_url and strict_natural_analysis and _analysis_style_conflicts(raw, style_preset):
                 correction_messages = messages + [
                     {"role": "assistant", "content": raw},
                     {"role": "user", "content": _style_correction_instruction(style_preset)},
@@ -2273,17 +2401,39 @@ class NO8DBatchPromptPlus:
                     service_type,
                     response_format,
                 )
+            if strict_natural_analysis and _analysis_language_conflicts(raw, output_language):
+                correction_messages = messages + [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": _chinese_language_correction_instruction()},
+                ]
+                raw = _chat_completion(
+                    api_base_url,
+                    api_key,
+                    request_model,
+                    correction_messages,
+                    0.0,
+                    max_tokens,
+                    effective_seed,
+                    service_type,
+                    response_format,
+                )
+                if _analysis_language_conflicts(raw, output_language):
+                    raise RuntimeError(
+                        "NO8D-Prompt: the model did not return all descriptive fields in Simplified Chinese "
+                        "after one correction. No mixed-language prompt was emitted."
+                    )
             try:
                 result = _clean_prompt_output(
                     raw,
                     prompt_rule,
                     output_language,
-                    strict_image_analysis,
+                    strict_natural_analysis,
                     style_preset,
                 )
             except ValueError:
                 partial_analysis, partial_scene = _partial_analysis_envelope(raw)
-                if partial_analysis and not partial_scene:
+                repair_scene_only = bool(partial_analysis and not partial_scene)
+                if repair_scene_only:
                     repair_instruction = (
                         "The visual_analysis object is already complete and will be preserved. Return exactly one JSON "
                         "object with only this key: {\"scene_description\": \"...\"}. Describe visible subject appearance "
@@ -2295,7 +2445,8 @@ class NO8DBatchPromptPlus:
                 else:
                     repair_instruction = (
                         "The previous response was not a complete valid JSON worksheet. Return the required JSON "
-                        "object only. Reinspect the image; do not copy camera wording from the invalid response."
+                        "object only. Re-evaluate the supplied text and image evidence; do not copy unsupported wording "
+                        "from the invalid response."
                     )
                     repair_max_tokens = max_tokens + 128
                 repair_messages = messages + [
@@ -2304,18 +2455,39 @@ class NO8DBatchPromptPlus:
                 ]
                 repair_format = _image_analysis_response_format(
                     api_base_url,
-                    scene_only=bool(partial_analysis and not partial_scene),
+                    scene_only=repair_scene_only,
                     service_type=service_type,
                 )
                 repaired = _chat_completion(api_base_url, api_key, request_model, repair_messages, 0.0, repair_max_tokens, effective_seed, service_type, repair_format)
                 try:
-                    if partial_analysis and not partial_scene:
+                    if repair_scene_only:
                         _, repaired_scene = _partial_analysis_envelope(repaired)
                         merged = {
                             "visual_analysis": partial_analysis,
                             "scene_description": repaired_scene,
                         }
                         repaired = json.dumps(merged, ensure_ascii=False)
+                    if _analysis_language_conflicts(repaired, output_language):
+                        language_messages = messages + [
+                            {"role": "assistant", "content": repaired},
+                            {"role": "user", "content": _chinese_language_correction_instruction()},
+                        ]
+                        repaired = _chat_completion(
+                            api_base_url,
+                            api_key,
+                            request_model,
+                            language_messages,
+                            0.0,
+                            max_tokens,
+                            effective_seed,
+                            service_type,
+                            response_format,
+                        )
+                        if _analysis_language_conflicts(repaired, output_language):
+                            raise RuntimeError(
+                                "NO8D-Prompt: the corrected analysis still contains English prose in "
+                                "Chinese output mode. No mixed-language prompt was emitted."
+                            )
                     result = _clean_prompt_output(
                         repaired,
                         prompt_rule,
@@ -2325,8 +2497,8 @@ class NO8DBatchPromptPlus:
                     )
                 except ValueError as exc:
                     raise RuntimeError(
-                        "NO8D-Prompt: the vision model did not return a complete visual-analysis result after one correction. "
-                        "No unverified composition prompt was emitted."
+                        "NO8D-Static-Prompt: the model did not return a complete visual analysis after one correction. "
+                        "No unverified generation prompt was emitted."
                     ) from exc
             if prompt_config_manager.prompt_rule_mode(prompt_rule) == "natural":
                 result = _limit_prompt_to_approx_tokens(result, _max_tokens_for_length(length_preset))
@@ -2345,7 +2517,7 @@ class NO8DBatchPromptPlus:
         model = model_cfg.get("name", "")
         service_type = service.get("type", "openai_compatible")
         temperature = _safe_float(model_cfg.get("temperature"), 0.7)
-        prompt_rule = prompt_config_manager.normalize_prompt_rule_name(prompt_rules)
+        prompt_rule = _normalize_prompt_rule_selection(prompt_rules)
         if prompt_rule not in prompt_config_manager.prompt_rule_names():
             prompt_rule = _RULE_NATURAL
         style_preset = _normalize_style_preset(style_preset)
@@ -2498,6 +2670,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "NO8DBatchPromptPlus": "NO8D-Prompt",
+    "NO8DBatchPromptPlus": "NO8D-Static-Prompt",
     "NO8DPromptView": "NO8D-Prompt-view",
 }

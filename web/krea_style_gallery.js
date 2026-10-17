@@ -29,7 +29,7 @@ const UI_TEXT = {
     search: ["搜索当前分类的名称或提示词…", "Search names or prompts in this category…"],
     clearSearch: ["清空搜索", "Clear search"],
     results: ["个搜索结果", "results"],
-    noResults: ["当前分类没有匹配的风格", "No matching styles in this category"],
+    noResults: ["请在该节点的设置中加载词库", "Load a prompt library in this node's settings"],
     addStyle: ["新增自定义风格", "Add custom style"],
     manageStyles: ["管理自定义风格", "Manage custom styles"],
     library: ["载入词库", "Load library"],
@@ -96,6 +96,8 @@ const UI_TEXT = {
     noSelection: ["尚未选择词卡", "No cards selected"],
     previousPage: ["上一页（PageUp）", "Previous page (PageUp)"],
     nextPage: ["下一页（PageDown）", "Next page (PageDown)"],
+    firstPageButton: ["首页", "First page"],
+    lastPageButton: ["尾页", "Last page"],
     page: ["第 {page} 页", "Page {page}"],
     firstPage: ["已经是第一页", "Already on the first page"],
     lastPage: ["已经是最后一页", "Already on the last page"],
@@ -381,6 +383,21 @@ function makeUi(node) {
         event.stopPropagation();
         openPageContextMenu(node, event);
     });
+    grid.addEventListener("wheel", (event) => {
+        if (event.ctrlKey || Math.abs(event.deltaY) < Math.abs(event.deltaX) || !event.deltaY) return;
+        event.preventDefault();
+        const direction = Math.sign(event.deltaY);
+        clearTimeout(node._no8dKreaWheelTimer);
+        node._no8dKreaWheelTimer = setTimeout(() => {
+            const pageCount = Math.max(1, Math.ceil(
+                filteredItems(node, node._no8dKreaStyleCatalog, node._no8dKreaLibrary).length / PAGE_SIZE,
+            ));
+            const page = Math.max(0, Math.min(node._no8dKreaStylePage || 0, pageCount - 1));
+            if (page + direction < 0) showBoundaryFeedback(node, -1, tr("firstPage"));
+            else if (page + direction >= pageCount) showBoundaryFeedback(node, 1, tr("lastPage"));
+            else selectPage(node, page + direction, direction);
+        }, 120);
+    }, { passive: false });
 
     const pager = document.createElement("div");
     pager.style.cssText = "display:flex;align-items:center;justify-content:center;gap:8px;flex:0 0 34px;min-height:34px;";
@@ -440,7 +457,6 @@ function filteredItems(node, catalog, library) {
 function currentLibraryItems(node, catalog = node._no8dKreaStyleCatalog) {
     return filteredItems(node, catalog, node._no8dKreaLibrary);
 }
-
 function isRecordLibrary(node, library = node._no8dKreaLibrary) {
     return Boolean(node._no8dKreaStyleCatalog?.virtual_libraries?.includes(library));
 }
@@ -1335,7 +1351,7 @@ async function showPage(node, nextPage, direction) {
 function selectPage(node, page, direction, localIndex = 0) {
     const catalog = node._no8dKreaStyleCatalog;
     const styleWidget = findWidget(node, "style");
-    const items = currentLibraryItems(node, catalog);
+    const items = filteredItems(node, catalog, node._no8dKreaLibrary);
     const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
     const targetPage = Math.max(0, Math.min(page, pageCount - 1));
     const target = items[Math.min(targetPage * PAGE_SIZE + localIndex, items.length - 1)];
@@ -1696,19 +1712,45 @@ function render(node, slideDirection = 0) {
     const countLabel = query ? `${items.length} ${tr("results")}` : `${items.length} ${tr("styles")}`;
     els.status.textContent = `${currentItem ? `${tr("selected")}: ${displayName(currentItem)}` : tr("noSelection")}　|　${countLabel}`;
     els.pager.style.visibility = items.length ? "visible" : "hidden";
+    const pageInput = document.createElement("input");
+    pageInput.type = "number";
+    pageInput.min = "1";
+    pageInput.max = String(pageCount);
+    pageInput.step = "1";
+    pageInput.value = String(page + 1);
+    pageInput.title = tr("page", { page: page + 1 });
+    pageInput.setAttribute("aria-label", pageInput.title);
+    pageInput.style.cssText = "width:58px;height:28px;padding:0 4px;border:1px solid #4b4f58;border-radius:6px;background:#1b1e23;color:#f4f4f5;font:700 13px sans-serif;text-align:center;box-sizing:border-box;";
+    const jumpToPage = () => {
+        const value = pageInput.valueAsNumber;
+        if (!Number.isInteger(value) || value < 1 || value > pageCount) {
+            pageInput.value = String(page + 1);
+            return;
+        }
+        if (value - 1 !== page) selectPage(node, value - 1, Math.sign(value - 1 - page));
+    };
+    pageInput.addEventListener("change", jumpToPage);
+    pageInput.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+            event.preventDefault();
+            jumpToPage();
+        }
+    });
     els.pager.replaceChildren(
+        pageButton("≪", tr("firstPageButton"), page === 0, () => page === 0
+            ? showBoundaryFeedback(node, -1, tr("firstPage"))
+            : selectPage(node, 0, -1)),
         pageButton("‹", tr("previousPage"), page === 0, () => page === 0
             ? showBoundaryFeedback(node, -1, tr("firstPage"))
             : selectPage(node, page - 1, -1)),
-        ...Array.from({ length: pageCount }, (_, index) => pageButton(
-            String(index + 1),
-            tr("page", { page: index + 1 }),
-            false,
-            () => selectPage(node, index, Math.sign(index - page)),
-        )),
+        pageInput,
         pageButton("›", tr("nextPage"), page === pageCount - 1, () => page === pageCount - 1
             ? showBoundaryFeedback(node, 1, tr("lastPage"))
             : selectPage(node, page + 1, 1)),
+        pageButton("≫", tr("lastPageButton"), page === pageCount - 1, () => page === pageCount - 1
+            ? showBoundaryFeedback(node, 1, tr("lastPage"))
+            : selectPage(node, pageCount - 1, 1)),
     );
     for (const button of els.pager.children) {
         if (button.textContent === String(page + 1)) {

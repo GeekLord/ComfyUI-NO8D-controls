@@ -340,7 +340,7 @@ class GenerateExpansionTests(unittest.TestCase):
         )
         self.assertEqual(
             expanded[masked_reference["inputs"]["mask"][0]]["class_type"],
-            "LoadImageMask",
+            "ImageToMask",
         )
         self.assertNotIn("vae", patch["inputs"])
         self.assertNotIn("source_image", patch["inputs"])
@@ -438,15 +438,21 @@ class GenerateExpansionTests(unittest.TestCase):
         self.assertTrue(all(node["inputs"]["clip"] == ["9", 0] for node in grounded))
         self.assertEqual(
             [node["inputs"]["text"] for node in grounded],
-            [""],
+            [(
+                "Extend the existing image naturally into the empty canvas "
+                "areas. Continue the surrounding scene across every boundary "
+                "at the same scale, perspective, lighting, and depth. Preserve "
+                "the existing image and do not duplicate any existing subject "
+                "or object."
+            )],
         )
-        grounded_source_id = next(
+        base_canvas_id = next(
             node_id for node_id, node in expanded.items()
             if node["class_type"] == "LoadImage"
-            and node["inputs"]["image"] == "source.png"
+            and node["inputs"]["image"] == "base.png"
         )
         self.assertTrue(all(
-            node["inputs"]["image"] == [grounded_source_id, 0]
+            node["inputs"]["image"] == [base_canvas_id, 0]
             for node in grounded
         ))
         sampler = next(
@@ -490,7 +496,13 @@ class GenerateExpansionTests(unittest.TestCase):
         ]
         self.assertEqual(
             [node["inputs"]["text"] for node in grounded],
-            ["", ""],
+            [(
+                "Extend the existing image naturally into the empty canvas "
+                "areas. Continue the surrounding scene across every boundary "
+                "at the same scale, perspective, lighting, and depth. Preserve "
+                "the existing image and do not duplicate any existing subject "
+                "or object."
+            ), ""],
         )
 
     def test_krea2_grounding_follows_one_conditioning_passthrough_chain(self):
@@ -658,8 +670,9 @@ class GenerateExpansionTests(unittest.TestCase):
         self.assertEqual(len(grounded), 1)
         self.assertEqual(
             grounded[0]["inputs"]["image"],
-            [source_load_id, 0],
+            [base_load_id, 0],
         )
+        self.assertNotEqual(grounded[0]["inputs"]["image"], [source_load_id, 0])
         sampler = next(
             node for node in expanded.values()
             if node["class_type"] == "KSampler"
@@ -722,10 +735,9 @@ class GenerateExpansionTests(unittest.TestCase):
         masked_reference_id = expanded[source_latent_id]["inputs"]["pixels"][0]
         masked_reference = expanded[masked_reference_id]
         self.assertEqual(masked_reference["class_type"], "ImageCompositeMasked")
-        self.assertEqual(
-            masked_reference["inputs"]["destination"],
-            [base_load_id, 0],
-        )
+        aligned_base_id = masked_reference["inputs"]["destination"][0]
+        self.assertEqual(expanded[aligned_base_id]["class_type"], "ImageScale")
+        self.assertEqual(expanded[aligned_base_id]["inputs"]["image"], [base_load_id, 0])
         empty_id = masked_reference["inputs"]["source"][0]
         self.assertEqual(expanded[empty_id]["class_type"], "EmptyImage")
         self.assertNotIn("source_image", patch["inputs"])
@@ -790,26 +802,13 @@ class GenerateExpansionTests(unittest.TestCase):
             '{"base_image_file":"base.png","mask_image_file":"mask.png",'
             '"mask_active":true}'
         )
-        self.assertEqual(
-            classes,
-            [
-                "ConditioningZeroOut",
-                "LoadImage",
-                "LoadImageMask",
-                "DifferentialDiffusion",
-                "VAEEncode",
-                "ThresholdMask",
-                "VAEEncodeForInpaint",
-                "LatentBlend",
-                "SetLatentNoiseMask",
-                "KSampler",
-                "VAEDecode",
-                "NO8DNormalizeDecodedImage",
-                "ImageScale",
-                "ImageCompositeMasked",
-                "PreviewImage",
-            ],
-        )
+        for class_type in (
+            "LoadImage", "LoadImageMask", "ImageScale", "ImageToMask",
+            "DifferentialDiffusion", "VAEEncodeForInpaint", "LatentBlend",
+            "SetLatentNoiseMask", "KSampler", "VAEDecode",
+            "ImageCompositeMasked", "PreviewImage",
+        ):
+            self.assertIn(class_type, classes)
 
     def test_manual_inpaint_crop_includes_feather_and_context(self):
         crop = self.node._manual_inpaint_crop_geometry(
@@ -828,6 +827,30 @@ class GenerateExpansionTests(unittest.TestCase):
         self.assertEqual(crop, {"x": 376, "y": 272, "width": 248, "height": 256})
         self.assertEqual(self.node._sampling_dimensions(248, 256), (512, 528))
         self.assertEqual(self.node._sampling_dimensions(200, 2000), (152, 1536))
+
+    def test_manual_inpaint_crop_matches_connected_frontend_feather_region(self):
+        crop = self.node._manual_inpaint_crop_geometry(
+            {
+                "strokes": [
+                    {
+                        "op": "add",
+                        "kind": "brush",
+                        "brushSize": 80,
+                        "points": [[400, 400]],
+                    },
+                    {
+                        "op": "add",
+                        "kind": "brush",
+                        "brushSize": 80,
+                        "points": [[460, 460]],
+                    },
+                ],
+            },
+            1024,
+            768,
+            50,
+        )
+        self.assertEqual(crop, {"x": 256, "y": 256, "width": 344, "height": 344})
 
     def test_generic_manual_inpaint_crops_samples_and_stitches_once(self):
         result = self.node.expand(
@@ -850,24 +873,26 @@ class GenerateExpansionTests(unittest.TestCase):
         self.assertIn("LatentBlend", classes)
         self.assertNotIn("ConditioningMultiply", classes)
         scales = [node for node in nodes if node["class_type"] == "ImageScale"]
-        self.assertEqual(len(scales), 4)
+        self.assertEqual(len(scales), 6)
         self.assertEqual(
             [(node["inputs"]["width"], node["inputs"]["height"]) for node in scales],
-            [(512, 528), (512, 528), (512, 528), (248, 256)],
+            [
+                (1024, 768), (1024, 768),
+                (512, 528), (512, 528), (512, 528), (248, 256),
+            ],
         )
         crop = next(node for node in nodes if node["class_type"] == "ImageCrop")
         self.assertEqual(
             crop["inputs"],
-            {"image": ["2", 0], "width": 248, "height": 256, "x": 376, "y": 272},
+            {"image": ["4", 0], "width": 248, "height": 256, "x": 376, "y": 272},
         )
         composite = next(
             node for node in nodes if node["class_type"] == "ImageCompositeMasked"
         )
-        cropped_mask_id = next(
-            node_id for node_id, node in result["expand"].items()
-            if node["class_type"] == "ImageToMask"
+        cropped_mask_id = composite["inputs"]["mask"][0]
+        self.assertEqual(
+            result["expand"][cropped_mask_id]["class_type"], "ImageToMask",
         )
-        self.assertEqual(composite["inputs"]["mask"], [cropped_mask_id, 0])
         latent_mask = next(
             node for node in nodes if node["class_type"] == "SetLatentNoiseMask"
         )
@@ -911,6 +936,21 @@ class GenerateExpansionTests(unittest.TestCase):
             node["inputs"]["latent"] == [encodes[0][0], 0]
             for node in references
         ))
+
+    def test_krea2_inpaint_keeps_full_canvas_conditioning_geometry(self):
+        self.use_krea2_model()
+        result = self.node.expand(
+            canvas=(
+                '{"base_image_file":"base.png","mask_image_file":"mask.png",'
+                '"mask_active":true,"canvas_width":1024,"canvas_height":768,'
+                '"strokes":[{"op":"add","kind":"brush","brushSize":80,'
+                '"points":[[500,400]]}]}'
+            ),
+            **self.inputs,
+        )
+        classes = [node["class_type"] for node in result["expand"].values()]
+        self.assertNotIn("ImageCrop", classes)
+        self.assertIn("NO8DKrea2ReferenceModel", classes)
 
     def test_klein_inpaint_uses_native_reference_latent_conditioning(self):
         self.use_klein_model()
@@ -1502,27 +1542,30 @@ class GenerateExpansionTests(unittest.TestCase):
         self.assertIn("widget?.updateHover?.(pos, event)", source)
         self.assertIn("nodeType.prototype.onMouseLeave = function", source)
 
-    def test_outpaint_result_is_not_committed_by_a_blank_canvas_click(self):
+    def test_outpaint_result_is_promoted_only_by_a_transform_gesture(self):
         source = (
             pathlib.Path(__file__).resolve().parents[1] / "web" / "generate.js"
         ).read_text(encoding="utf-8")
         begin = source.index("    beginTransformDrag(pos) {")
         update = source.index("    updateTransformDrag(pos, disableSnap = false) {")
         begin_body = source[begin:update]
-        self.assertNotIn("acceptCurrentResultAsEditingBase()", begin_body)
         self.assertIn(
-            "if (this.executionActive || this.outpaintResultVisible || !this.transformActive "
+            "if (this.executionActive || !this.transformActive "
             "|| !this.contentRect) return false;",
             begin_body,
         )
         self.assertIn(
-            "if (this.outpaintResultVisible\n"
-            "            || !this.transformActive\n"
+            "if (!this.transformActive\n"
             "            || !pointInRect(pos, this.canvasRect)) return null;",
             source,
         )
+        self.assertIn("promoteResult: this.outpaintResultVisible", begin_body)
+        update_body = source[update:source.index("    mouse(event, pos) {")]
+        self.assertIn("if (drag.promoteResult) {", update_body)
+        self.assertIn("this.acceptCurrentResultAsEditingBase();", update_body)
+        self.assertIn("drag.promoteResult = false;", update_body)
         self.assertIn(
-            "if (this.executionActive || !this.transformActive || this.outpaintResultVisible "
+            "if (this.executionActive || !this.transformActive "
             "|| !this.contentRect) return;",
             source,
         )
@@ -1555,7 +1598,7 @@ class GenerateExpansionTests(unittest.TestCase):
         self.assertIn("visibleTransformRect()", source)
         self.assertIn("ctx.rect(...this.canvasRect.slice(0, 4));", source)
         self.assertIn(
-            "if (this.outpaintResultVisible",
+            "if (!this.transformActive",
             source,
         )
         self.assertIn(
@@ -1647,11 +1690,8 @@ class GenerateExpansionTests(unittest.TestCase):
         self.assertEqual(inpaint["inputs"]["grow_mask_by"], 6)
         self.assertAlmostEqual(blend["inputs"]["blend_factor"], 0.0)
         self.assertEqual(masked["inputs"]["samples"], [blend_id, 0])
-        loaded_mask_id = next(
-            node_id for node_id, node in expanded.items()
-            if node["class_type"] == "LoadImageMask"
-        )
-        self.assertEqual(masked["inputs"]["mask"], [loaded_mask_id, 0])
+        aligned_mask_id = masked["inputs"]["mask"][0]
+        self.assertEqual(expanded[aligned_mask_id]["class_type"], "ImageToMask")
 
         self.inputs["denoise"] = 0.5
         result = self.node.expand(

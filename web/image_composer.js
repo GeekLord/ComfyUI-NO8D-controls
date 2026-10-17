@@ -8,6 +8,10 @@ const SHORT_SIDES = [512, 768, 1024, 1280, 1536, 2048];
 const HANDLE_SIZE = 12;
 const MIN_SCALE = 0.01;
 const MAX_SCALE = 20;
+const NODE_MIN_WIDTH = 320;
+const NODE_WIDGET_MIN_HEIGHT = 120;
+const NODE_PREVIEW_MAX_EDGE = 1024;
+const NATIVE_PREVIEW_WIDGET = "$$canvas-image-preview";
 
 const COMPOSER_EN = {
     "打开图层合成器": "Open Image Composer",
@@ -64,7 +68,7 @@ function refreshComposerLocale(force = false) {
 
 const style = document.createElement("style");
 style.textContent = `
-.no8d-composer-node{width:100%;display:flex;flex-direction:column;gap:7px;box-sizing:border-box;padding:2px 0 4px}.no8d-composer-node-preview{width:100%;height:210px;display:flex;align-items:center;justify-content:center;overflow:hidden;border:1px solid #444;border-radius:6px;background:#090a0d}.no8d-composer-node-preview canvas{display:block;max-width:100%;max-height:100%}.no8d-composer-node button{height:30px;color:#eee;background:#30343c;border:1px solid #555b66;border-radius:5px;cursor:pointer}.no8d-composer-node button:hover{background:#3a3f48}
+.no8d-composer-node{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:7px;box-sizing:border-box;padding:2px 0 4px}.no8d-composer-node-preview{width:100%;min-height:0;flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;border:1px solid #444;border-radius:6px;background:#090a0d}.no8d-composer-node-preview canvas{display:block;width:100%;height:100%;object-fit:contain}.no8d-composer-node button{height:30px;flex:none;color:#eee;background:#30343c;border:1px solid #555b66;border-radius:5px;cursor:pointer}.no8d-composer-node button:hover{background:#3a3f48}
 .no8d-composer-overlay{position:fixed;inset:0;z-index:10020;background:#000c;display:flex;align-items:center;justify-content:center;font:13px Arial,sans-serif;color:#eee}.no8d-composer-dialog{width:min(96vw,1600px);height:min(94vh,980px);background:#17191d;border:1px solid #414650;border-radius:12px;box-shadow:0 20px 70px #000;display:grid;grid-template-rows:auto 1fr;overflow:hidden}.no8d-composer-toolbar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:#22252b;border-bottom:1px solid #363a43}.no8d-composer-toolbar strong{font-size:15px;margin-right:8px}.no8d-composer-toolbar label{display:flex;align-items:center;gap:5px;color:#bbb}.no8d-composer-toolbar select,.no8d-composer-toolbar button,.no8d-composer-sidebar button{color:#eee;background:#30343c;border:1px solid #4b515c;border-radius:6px;padding:6px 10px;cursor:pointer}.no8d-composer-toolbar select{background:#121419}.no8d-composer-toolbar .spacer{flex:1}.no8d-composer-toolbar button.primary{background:#2563eb;border-color:#3b82f6}.no8d-composer-toolbar button:disabled,.no8d-composer-sidebar button:disabled{opacity:.5;cursor:default}.no8d-composer-zoom{min-width:52px;text-align:center;color:#aeb5c0}
 .no8d-composer-body{display:grid;grid-template-columns:minmax(0,1fr) 320px;min-height:0}.no8d-composer-stage{min-width:0;min-height:0;overflow:hidden;background-color:#101216;background-image:linear-gradient(45deg,#191c22 25%,transparent 25%),linear-gradient(-45deg,#191c22 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#191c22 75%),linear-gradient(-45deg,transparent 75%,#191c22 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}.no8d-composer-stage-inner{width:100%;height:100%}.no8d-composer-stage canvas{display:block;width:100%;height:100%;touch-action:none;cursor:default}
 .no8d-composer-sidebar{overflow:auto;border-left:1px solid #363a43;background:#202329;padding:12px}.no8d-composer-sidebar h3{font-size:12px;color:#9ca3af;text-transform:uppercase;margin:4px 0 8px}.no8d-composer-layer{display:grid;grid-template-columns:22px 22px 24px minmax(0,1fr);align-items:center;gap:7px;padding:8px;margin-bottom:5px;border:1px solid #3b4049;border-radius:7px;background:#292d34;cursor:pointer}.no8d-composer-layer.selected{border-color:#3b82f6;background:#25344f}.no8d-composer-layer.dragging{opacity:.45}.no8d-composer-layer.drop-before{box-shadow:0 -2px 0 #60a5fa}.no8d-composer-grip{color:#8e96a3;font-size:16px;cursor:grab}.no8d-composer-layer-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.no8d-composer-layer-lock,.no8d-composer-layer-eye{border:0!important;background:transparent!important;padding:0!important;font-size:16px;line-height:1}.no8d-composer-empty{color:#888;text-align:center;margin:24px 8px;line-height:1.6}.no8d-composer-properties{display:flex;flex-direction:column;gap:10px}.no8d-composer-property-row{display:grid;grid-template-columns:1fr auto;align-items:end;gap:7px}.no8d-composer-property-row label{display:flex;flex-direction:column;gap:4px;color:#b8bdc7}.no8d-composer-property-row input{width:100%;box-sizing:border-box;background:#121419;color:#eee;border:1px solid #444a55;border-radius:5px;padding:6px}.no8d-composer-slider-value{width:58px!important;text-align:right;color:#dbeafe;font-variant-numeric:tabular-nums}.no8d-composer-actions{display:grid;grid-template-columns:1fr auto;gap:7px}.no8d-composer-actions button.active{background:#9a3412;border-color:#fb923c}.no8d-composer-mirror{display:grid;grid-template-columns:1fr 1fr;gap:7px}.no8d-composer-switch{display:flex;align-items:center;justify-content:space-between;gap:10px;color:#b8bdc7;cursor:pointer}.no8d-composer-switch input{position:absolute;opacity:0;width:1px;height:1px}.no8d-composer-switch-track{width:36px;height:20px;flex:none;border-radius:20px;background:var(--p-toggleswitch-background,#555b66);position:relative;transition:background .15s}.no8d-composer-switch-track::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--p-toggleswitch-handle-background,#fff);transition:transform .15s}.no8d-composer-switch input:checked+.no8d-composer-switch-track{background:var(--p-toggleswitch-checked-background,#3b82f6)}.no8d-composer-switch input:checked+.no8d-composer-switch-track::after{transform:translateX(16px)}.no8d-composer-switch input:focus-visible+.no8d-composer-switch-track{outline:2px solid #93c5fd;outline-offset:2px}.no8d-composer-switch input:disabled+.no8d-composer-switch-track{opacity:.45}.no8d-composer-stroke{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px}.no8d-composer-stroke label{display:flex;flex-direction:column;gap:4px;color:#b8bdc7}.no8d-composer-stroke input[type=number]{width:100%;box-sizing:border-box;background:#121419;color:#eee;border:1px solid #444a55;border-radius:5px;padding:6px}.no8d-composer-brush{display:flex;align-items:center;gap:8px;color:#b8bdc7}.no8d-composer-brush input{flex:1}.no8d-composer-status{min-height:18px;margin-top:10px;color:#93c5fd;line-height:1.4}.no8d-composer-help{margin-top:8px;color:#9299a5;line-height:1.5}.no8d-composer-file-input{display:none}
@@ -980,7 +984,8 @@ function openEditor(node) {
 
 async function renderNodePreview(node, suppliedState = null) {
     const preview = node?._no8dComposerPreview; if (!preview?.canvas) return;
-    const state = suppliedState || readState(node); const size = canvasSize(state); const canvas = preview.canvas; const scale = Math.min(300 / size.width, 210 / size.height);
+    const state = suppliedState || readState(node); const size = canvasSize(state); const canvas = preview.canvas;
+    const scale = Math.min(1, NODE_PREVIEW_MAX_EDGE / Math.max(size.width, size.height));
     canvas.width = Math.max(1, Math.round(size.width * scale)); canvas.height = Math.max(1, Math.round(size.height * scale));
     const context = canvas.getContext("2d"); context.fillStyle = "#000"; context.fillRect(0, 0, canvas.width, canvas.height);
     for (const layer of state.layers) {
@@ -1025,18 +1030,60 @@ function hideLayoutWidget(node) {
     if (layout.inputEl) layout.inputEl.style.display = "none";
 }
 
+function removeNativePreviewWidget(node) {
+    node.imgs = [];
+    const widgets = node.widgets || [];
+    for (let index = widgets.length - 1; index >= 0; index -= 1) {
+        const widget = widgets[index];
+        if (widget?.name !== NATIVE_PREVIEW_WIDGET) continue;
+        widget.onRemove?.();
+        widgets.splice(index, 1);
+    }
+}
+
+function ensureComposerMinimumSize(node) {
+    if (!node || typeof node.setSize !== "function") return;
+    const computed = node.computeSize?.();
+    const width = Math.max(NODE_MIN_WIDTH, Number(node.size?.[0]) || Number(computed?.[0]) || NODE_MIN_WIDTH);
+    const height = Math.max(Number(node.size?.[1]) || 0, Number(computed?.[1]) || NODE_WIDGET_MIN_HEIGHT);
+    node.setSize([width, height]);
+    node.graph?.setDirtyCanvas?.(true, true);
+}
+
 function activate(node) {
     if (!isComposer(node) || node._no8dComposerReady) return;
     node._no8dComposerReady = true;
+    const onDrawBackground = node.onDrawBackground;
+    node.onDrawBackground = function () {
+        const result = onDrawBackground?.apply(this, arguments);
+        removeNativePreviewWidget(this);
+        return result;
+    };
+    removeNativePreviewWidget(node);
     hideLayoutWidget(node);
     const root = document.createElement("div"); root.className = "no8d-composer-node";
     const preview = document.createElement("div"); preview.className = "no8d-composer-node-preview";
     const canvas = document.createElement("canvas"); preview.appendChild(canvas);
     const button = makeButton("打开图层合成器", () => openEditor(node)); root.append(preview, button);
     node._no8dComposerPreview = { root, canvas, button };
-    const domWidget = node.addDOMWidget?.("no8d_composer_editor", "NO8D_IMAGE_COMPOSER", root, { serialize: false, hideOnZoom: false, getValue: () => undefined, setValue: () => {} });
-    if (domWidget) domWidget.serialize = false;
-    node.setSize?.([Math.max(320, node.size?.[0] || 320), 330]); renderNodePreview(node);
+    const domWidget = node.addDOMWidget?.("no8d_composer_editor", "NO8D_IMAGE_COMPOSER", root, { serialize: false, hideOnZoom: false, getMinHeight: () => NODE_WIDGET_MIN_HEIGHT, getValue: () => undefined, setValue: () => {} });
+    if (domWidget) {
+        domWidget.serialize = false;
+        domWidget.computeLayoutSize = () => ({
+            minWidth: NODE_MIN_WIDTH,
+            minHeight: NODE_WIDGET_MIN_HEIGHT,
+            maxWidth: 1_000_000,
+            maxHeight: 1_000_000,
+        });
+        Object.defineProperty(domWidget, "width", {
+            configurable: true,
+            get() {
+                return this.node?.width || this.node?.size?.[0] || NODE_MIN_WIDTH;
+            },
+            set() {},
+        });
+    }
+    ensureComposerMinimumSize(node); renderNodePreview(node);
 }
 
 app.registerExtension({
@@ -1052,9 +1099,13 @@ app.registerExtension({
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () { onCreated?.apply(this, arguments); activate(this); };
         const onConfigure = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function () { onConfigure?.apply(this, arguments); setTimeout(() => { hideLayoutWidget(this); activate(this); renderNodePreview(this); }, 0); };
+        nodeType.prototype.onConfigure = function () { onConfigure?.apply(this, arguments); setTimeout(() => { removeNativePreviewWidget(this); hideLayoutWidget(this); activate(this); ensureComposerMinimumSize(this); renderNodePreview(this); }, 0); };
         const onExecuted = nodeType.prototype.onExecuted;
-        nodeType.prototype.onExecuted = function (message) { onExecuted?.apply(this, arguments); this.imgs = null; this.images = null; renderNodePreview(this); };
+        nodeType.prototype.onExecuted = function (message) {
+            onExecuted?.apply(this, arguments);
+            removeNativePreviewWidget(this); renderNodePreview(this);
+            requestAnimationFrame(() => { removeNativePreviewWidget(this); renderNodePreview(this); });
+        };
     },
     nodeCreated(node) { hideLayoutWidget(node); activate(node); },
 });

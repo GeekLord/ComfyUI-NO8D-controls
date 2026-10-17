@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 import json
+import math
 import os
 from pathlib import Path
 
@@ -26,6 +27,17 @@ except Exception:
 _API_PREFIX = "/no8d-control/api"
 _THUMB_CACHE = {}
 _THUMB_CACHE_LIMIT = 512
+_CROP_MULTIPLES = (8, 16, 32, 64)
+_COMMON_ASPECT_RATIOS = (
+    (1, 1),
+    (4, 5), (5, 4),
+    (3, 4), (4, 3),
+    (2, 3), (3, 2),
+    (9, 16), (16, 9),
+    (2, 1), (1, 2),
+)
+
+
 def _input_directory():
     if folder_paths is not None:
         try:
@@ -95,12 +107,64 @@ def _ref_to_path(ref):
     return resolved
 
 
-def _load_image(path):
+def _normalize_crop_multiple(value):
+    text = str(value if value is not None else "none").strip().lower()
+    if text in {"", "none", "off", "不裁切"}:
+        return None
+    try:
+        multiple = int(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("NO8D-Load-images: crop multiple must be none, 8, 16, 32, or 64.") from exc
+    if multiple not in _CROP_MULTIPLES:
+        raise ValueError("NO8D-Load-images: crop multiple must be none, 8, 16, 32, or 64.")
+    return multiple
+
+
+def _center_crop_to_multiple(image, multiple):
+    if multiple is None:
+        return image
+    width, height = image.size
+    candidates = []
+    for ratio_width, ratio_height in _COMMON_ASPECT_RATIOS:
+        ratio_scale_step = math.lcm(
+            multiple // math.gcd(multiple, ratio_width),
+            multiple // math.gcd(multiple, ratio_height),
+        )
+        scale = min(
+            width // (ratio_width * ratio_scale_step),
+            height // (ratio_height * ratio_scale_step),
+        )
+        if scale == 0:
+            continue
+        retained_area = (
+            min(width, height * ratio_width / ratio_height)
+            * min(height, width * ratio_height / ratio_width)
+        )
+        candidates.append((
+            retained_area,
+            ratio_width * ratio_scale_step * scale,
+            ratio_height * ratio_scale_step * scale,
+        ))
+    if not candidates:
+        raise ValueError(
+            f"NO8D-Load-images: image size {width}x{height} cannot satisfy the nearest "
+            f"common aspect ratio with both sides divisible by {multiple}."
+        )
+    _, target_width, target_height = max(candidates)
+    if target_width == width and target_height == height:
+        return image
+    left = (width - target_width) // 2
+    top = (height - target_height) // 2
+    return image.crop((left, top, left + target_width, top + target_height))
+
+
+def _load_image(path, crop_multiple=None):
     with Image.open(path) as image:
         image = ImageOps.exif_transpose(image)
         if image.mode == "I":
             image = image.point(lambda i: i * (1 / 255))
         image = image.convert("RGB")
+        image = _center_crop_to_multiple(image, crop_multiple)
         arr = np.asarray(image).astype(np.float32) / 255.0
     tensor = torch.from_numpy(arr)[None,]
     try:
@@ -178,6 +242,7 @@ class NO8DLoadImages:
             "required": {
                 "image_files": ("STRING", {"default": "[]", "multiline": False}),
                 "output_files": ("STRING", {"default": "[]", "multiline": False}),
+                "crop_multiple": (["none", "8", "16", "32", "64"], {"default": "none"}),
             },
         }
 
@@ -188,12 +253,13 @@ class NO8DLoadImages:
     CATEGORY = "NO8D-control"
 
     @classmethod
-    def IS_CHANGED(cls, image_files="[]", output_files="[]"):
+    def IS_CHANGED(cls, image_files="[]", output_files="[]", crop_multiple="none"):
         refs = _parse_image_refs(output_files)
         paths = [_ref_to_path(ref) for ref in refs]
-        return _fingerprint(paths, f"{image_files}\n{output_files}")
+        multiple = _normalize_crop_multiple(crop_multiple)
+        return _fingerprint(paths, f"{image_files}\n{output_files}\n{multiple}")
 
-    def load(self, image_files="[]", output_files="[]"):
+    def load(self, image_files="[]", output_files="[]", crop_multiple="none"):
         refs = _parse_image_refs(output_files)
         paths = [_ref_to_path(ref) for ref in refs]
         if not paths:
@@ -203,7 +269,8 @@ class NO8DLoadImages:
         if missing:
             raise FileNotFoundError("NO8D-Load-images: image not found: " + missing[0])
 
-        images = [_load_image(path) for path in paths]
+        multiple = _normalize_crop_multiple(crop_multiple)
+        images = [_load_image(path, multiple) for path in paths]
         return (images,)
 
 

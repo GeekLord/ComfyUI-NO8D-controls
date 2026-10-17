@@ -136,6 +136,37 @@ class NO8DGenerate:
             mask = graph.node("LoadImageMask", image=mask_image_file, channel="red")
             encode_image = base.out(0)
             sample_mask = mask.out(0)
+            if not outpaint_active:
+                # ImageCompositeMasked inherits its destination dimensions.
+                # A stale uploaded base from an earlier canvas ratio can
+                # therefore silently change an inpaint result back to that
+                # older size after sampling. Normalize both edit inputs to the
+                # declared canvas before reference encoding, sampling and the
+                # final pixel composite.
+                aligned_base = graph.node(
+                    "ImageScale",
+                    image=encode_image,
+                    upscale_method="lanczos",
+                    width=canvas_width,
+                    height=canvas_height,
+                    crop="disabled",
+                )
+                mask_image = graph.node("MaskToImage", mask=sample_mask)
+                aligned_mask_image = graph.node(
+                    "ImageScale",
+                    image=mask_image.out(0),
+                    upscale_method="bilinear",
+                    width=canvas_width,
+                    height=canvas_height,
+                    crop="disabled",
+                )
+                aligned_mask = graph.node(
+                    "ImageToMask",
+                    image=aligned_mask_image.out(0),
+                    channel="red",
+                )
+                encode_image = aligned_base.out(0)
+                sample_mask = aligned_mask.out(0)
             grounding_image = encode_image
             spatial_reference_image = encode_image
             # Edit-model reference branches have their own native target
@@ -157,16 +188,15 @@ class NO8DGenerate:
                     spatial_reference_image = source.out(0)
             if use_krea2_reference:
                 if outpaint_active:
-                    # The source-patch branch needs the expanded canvas so its
-                    # tokens retain the exact placement used by outpaint.
-                    # Grounded Encode is semantic rather than spatial: keep
-                    # the intact pre-transform source selected above when it
-                    # exists. Feeding the mostly-empty expanded canvas to both
-                    # branches dilutes the visual reference as the outpaint
-                    # area grows and makes large expansions drift away from
-                    # the original scene. This split matches the established
-                    # Krea2 Edit outpaint graph.
+                    # Both Krea2 edit references must use the same expanded
+                    # canvas geometry. Feeding Grounded Encode the untouched
+                    # pre-transform source while the source patch receives the
+                    # placed square/portrait canvas gives the model two
+                    # incompatible subject scales; the generated outpaint then
+                    # looks like a larger full-frame reconstruction underneath
+                    # the preserved source rectangle.
                     spatial_reference_image = encode_image
+                    grounding_image = encode_image
                 else:
                     # An intact Identity Edit source tells the model to
                     # reconstruct the same masked content. Remove that content
@@ -360,7 +390,7 @@ class NO8DGenerate:
         if output_mask is not None:
             composite = graph.node(
                 "ImageCompositeMasked",
-                destination=base.out(0),
+                destination=encode_image,
                 source=generated_image,
                 x=0,
                 y=0,
@@ -392,7 +422,7 @@ class NO8DGenerate:
         if not isinstance(strokes, list):
             return None
 
-        bounds = []
+        entries = []
         for stroke in strokes:
             if not isinstance(stroke, dict) or stroke.get("op") == "subtract":
                 continue
@@ -413,29 +443,94 @@ class NO8DGenerate:
             min_y = min(point[1] for point in valid_points)
             max_x = max(point[0] for point in valid_points)
             max_y = max(point[1] for point in valid_points)
-            if stroke.get("kind") == "lasso":
-                diameter = max(1.0, min(max_x - min_x, max_y - min_y))
-                core_radius = 0.0
-            else:
+            kind = "lasso" if stroke.get("kind") == "lasso" else "brush"
+            if kind == "brush":
                 diameter = max(1.0, float(stroke.get("brushSize") or 1.0))
                 core_radius = diameter * 0.5
-            feather_radius = diameter * 0.5 * max(
-                0.0, min(100.0, float(mask_feather)),
-            ) / 100.0
-            radius = core_radius + feather_radius
-            bounds.append((
-                min_x - radius,
-                min_y - radius,
-                max_x + radius,
-                max_y + radius,
-            ))
-        if not bounds:
+                min_x -= core_radius
+                min_y -= core_radius
+                max_x += core_radius
+                max_y += core_radius
+            if max_x < 0 or max_y < 0 or min_x > canvas_width or min_y > canvas_height:
+                continue
+            entries.append({
+                "kind": kind,
+                "bounds": (
+                    max(0.0, min_x),
+                    max(0.0, min_y),
+                    min(float(canvas_width), max_x),
+                    min(float(canvas_height), max_y),
+                ),
+            })
+        if not entries:
             return None
 
-        left = min(bound[0] for bound in bounds)
-        top = min(bound[1] for bound in bounds)
-        right = max(bound[2] for bound in bounds)
-        bottom = max(bound[3] for bound in bounds)
+        # Match the frontend's final-mask feather geometry. Touching strokes of
+        # the same kind form one painted region, and its feather radius is
+        # derived from that region's shorter side. Computing each stroke in
+        # isolation can crop away part of the visible feather on a connected
+        # lasso/brush region.
+        parents = list(range(len(entries)))
+
+        def find(index):
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left_index, right_index):
+            left_root = find(left_index)
+            right_root = find(right_index)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        def overlaps(left_bounds, right_bounds):
+            return (
+                left_bounds[0] <= right_bounds[2]
+                and left_bounds[2] >= right_bounds[0]
+                and left_bounds[1] <= right_bounds[3]
+                and left_bounds[3] >= right_bounds[1]
+            )
+
+        for left_index, left_entry in enumerate(entries):
+            for right_index in range(left_index + 1, len(entries)):
+                right_entry = entries[right_index]
+                if left_entry["kind"] != right_entry["kind"]:
+                    continue
+                if overlaps(left_entry["bounds"], right_entry["bounds"]):
+                    union(left_index, right_index)
+
+        groups = {}
+        for index, entry in enumerate(entries):
+            root = find(index)
+            bounds = groups.get(root, entry["bounds"])
+            entry_bounds = entry["bounds"]
+            groups[root] = (
+                min(bounds[0], entry_bounds[0]),
+                min(bounds[1], entry_bounds[1]),
+                max(bounds[2], entry_bounds[2]),
+                max(bounds[3], entry_bounds[3]),
+            )
+
+        feather_strength = max(0.0, min(100.0, float(mask_feather))) / 100.0
+        feathered_bounds = []
+        for bounds in groups.values():
+            diameter = max(1.0, min(
+                bounds[2] - bounds[0],
+                bounds[3] - bounds[1],
+            ))
+            feather_radius = diameter * 0.5 * feather_strength
+            feathered_bounds.append((
+                max(0.0, bounds[0] - feather_radius),
+                max(0.0, bounds[1] - feather_radius),
+                min(float(canvas_width), bounds[2] + feather_radius),
+                min(float(canvas_height), bounds[3] + feather_radius),
+            ))
+
+        left = min(bound[0] for bound in feathered_bounds)
+        top = min(bound[1] for bound in feathered_bounds)
+        right = max(bound[2] for bound in feathered_bounds)
+        bottom = max(bound[3] for bound in feathered_bounds)
         content_size = max(right - left, bottom - top)
         context = max(64, min(256, round(content_size * 0.25)))
         left = max(0, math.floor((left - context) / 8) * 8)
@@ -864,10 +959,20 @@ class NO8DGenerate:
             return None
         text = str(grounding["text"] or "").strip()
         if edit_mode == "outpaint":
-            # Keep Krea2 outpaint spatially driven. Reusing either the T2I
-            # subject prompt or round-dependent prose can ask the model to
-            # redraw complete objects in the newly exposed area.
-            grounded_text = ""
+            # Krea2 Edit needs an image-grounded instruction as well as the
+            # source-token patch.  An empty positive instruction behaves like
+            # reconstruction when a large part of the target is unknown: a
+            # salient source object may then be repeated in the new area.
+            # Keep the instruction independent from the original T2I prompt
+            # (which can also redraw subjects), but state the outpaint task and
+            # its geometric constraints explicitly.
+            grounded_text = (
+                "Extend the existing image naturally into the empty canvas "
+                "areas. Continue the surrounding scene across every boundary "
+                "at the same scale, perspective, lighting, and depth. Preserve "
+                "the existing image and do not duplicate any existing subject "
+                "or object."
+            )
         elif edit_mode == "inpaint":
             # Match the proven Identity Edit workflow: the source image carries
             # the edit context and both grounded branches use empty text. The
